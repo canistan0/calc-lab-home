@@ -90,3 +90,20 @@ static Token next_token(Lexer *lexer)
     }
     return token;
 }
+static const char *token_name(TokenType type)
+{
+    switch (type){
+        case TOK_NUMBER:  return "NUMBER";
+        case TOK_PLUS:    return "PLUS";
+        case TOK_MINUS:   return "MINUS";
+        case TOK_STAR:    return "MULTIPLY";
+        case TOK_SLASH:   return "DIVIDE";
+        case TOK_POWER:   return "POWER";
+        case TOK_LPAREN:  return "LEFT_PAREN";
+        case TOK_RPAREN:  return "RIGHT_PAREN";
+        case TOK_NEWLINE: return "NEWLINE";
+        case TOK_INVALID: return "INVALID";
+        case TOK_END:     return "END";
+    }
+    return "UNKNOWN";
+}
