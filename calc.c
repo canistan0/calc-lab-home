@@ -107,3 +107,45 @@ static const char *token_name(TokenType type)
     }
     return "UNKNOWN";
 }
+int main(int argc, char *argv[])
+{
+    if (argc != 2){
+        fprintf(stderr, "Usage: %s input.txt\n", argv[0]);
+        return 1;}
+
+    FILE *input = fopen(argv[1], "r");
+
+    if (input == NULL){
+        perror("Cannot open input file");
+        return 1;}
+
+    Lexer lexer = {input, 0, 1};
+    lexer.current = fgetc(input);
+
+    // This output helps us check the tokenizer before adding calculations.
+    for (;;) {
+        Token token = next_token(&lexer);
+
+        printf("%zu: %s", token.position, token_name(token.type));
+
+        if (token.type == TOK_NUMBER) {
+            printf(" %lld", token.value);}
+
+        putchar('\n');
+
+        if (token.type == TOK_END){
+            break;
+        }
+    }
+
+    if (ferror(input)) {
+        fprintf(stderr, "Cannot read input file\n");
+        fclose(input);
+        return 1;}
+
+    if (fclose(input) == EOF) {
+        fprintf(stderr, "Cannot close input file\n");
+        return 1;}
+
+    return 0;
+}
