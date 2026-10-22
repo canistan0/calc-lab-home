@@ -20,6 +20,12 @@ typedef struct {
     size_t position;
 } Lexer;
 
+typedef struct {
+    Lexer lexer;
+    Token token;
+    size_t error_position;
+} Parser;
+
 // The position starts at 1. Every character counts, including newlines.
 // EOF keeps the position just after the last character.
 static void advance(Lexer *lexer)
@@ -90,62 +96,55 @@ static Token next_token(Lexer *lexer)
     }
     return token;
 }
-static const char *token_name(TokenType type)
+
+
+static void move_token(Parser *parser)
 {
-    switch (type){
-        case TOK_NUMBER:  return "NUMBER";
-        case TOK_PLUS:    return "PLUS";
-        case TOK_MINUS:   return "MINUS";
-        case TOK_STAR:    return "MULTIPLY";
-        case TOK_SLASH:   return "DIVIDE";
-        case TOK_POWER:   return "POWER";
-        case TOK_LPAREN:  return "LEFT_PAREN";
-        case TOK_RPAREN:  return "RIGHT_PAREN";
-        case TOK_NEWLINE: return "NEWLINE";
-        case TOK_INVALID: return "INVALID";
-        case TOK_END:     return "END";
-    }
-    return "UNKNOWN";
+    parser->token = next_token(&parser->lexer);}
+
+static void set_error(Parser *parser, size_t position)
+{
+    // I keep the first error because the task asks for only one error.
+    if (parser->error_position == 0) {
+        parser->error_position = position;}
 }
-int main(int argc, char *argv[])
+
+static long long read_number(Parser *parser)
 {
-    if (argc != 2){
-        fprintf(stderr, "Usage: %s input.txt\n", argv[0]);
-        return 1;}
+    if (parser->token.type != TOK_NUMBER) {
+        // This token is where the parser expected a number.
+        set_error(parser, parser->token.position);
+        return 0;
+    }
 
-    FILE *input = fopen(argv[1], "r");
+    long long value = parser->token.value;
+    move_token(parser);
+    return value;
+}
 
-    if (input == NULL){
-        perror("Cannot open input file");
-        return 1;}
+static long long read_expression(Parser *parser)
+{
+    long long result = read_number(parser);
 
-    Lexer lexer = {input, 0, 1};
-    lexer.current = fgetc(input);
+    // The loop calculates + and - from left to right.
+    while (parser->error_position == 0 &&
+           (parser->token.type == TOK_PLUS ||
+            parser->token.type == TOK_MINUS)) {
+        TokenType operation = parser->token.type;
+        move_token(parser);
 
-    // This output helps us check the tokenizer before adding calculations.
-    for (;;) {
-        Token token = next_token(&lexer);
+        long long right = read_number(parser);
 
-        printf("%zu: %s", token.position, token_name(token.type));
+        if (parser->error_position != 0) {
+            return 0;
+        }
 
-        if (token.type == TOK_NUMBER) {
-            printf(" %lld", token.value);}
-
-        putchar('\n');
-
-        if (token.type == TOK_END){
-            break;
+        if (operation == TOK_PLUS) {
+            result += right;
+        } else {
+            result -= right;
         }
     }
-
-    if (ferror(input)) {
-        fprintf(stderr, "Cannot read input file\n");
-        fclose(input);
-        return 1;}
-
-    if (fclose(input) == EOF) {
-        fprintf(stderr, "Cannot close input file\n");
-        return 1;}
-
-    return 0;
+    return result;
 }
+
