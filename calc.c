@@ -3,6 +3,18 @@
 // Compile with: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <errno.h>
+
+// These values are used in output filenames.
+// Use lowercase letters for the name and surname.
+#define STUDENT_NAME "Yabesh Canistan"
+#define STUDENT_LASTNAME "Raj Kumar"
+#define STUDENT_ID "231ADB199"
+
 
 typedef enum {
     TOK_NUMBER,TOK_PLUS,TOK_MINUS,TOK_STAR,TOK_SLASH,TOK_POWER,TOK_LPAREN,TOK_RPAREN,TOK_NEWLINE,TOK_INVALID,TOK_END
@@ -277,14 +289,9 @@ static long long read_expression(Parser *parser)
     return result;
 }
 
-int main(int argc, char *argv[])
+static int evaluate_file(const char *input_path, FILE *output)
 {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s input.txt\n", argv[0]);
-        return 1;}
-
-    FILE *input = fopen(argv[1], "r");
-
+    FILE *input = fopen(input_path, "r");
     if (input == NULL) {
         perror("Cannot open input file");
         return 1;
@@ -348,7 +355,7 @@ int main(int argc, char *argv[])
     if (!io_error) {
         if (parser.error_position != 0) {
             // Expression errors are normal results, so they return 0.
-            if (printf("ERROR:%zu\n", parser.error_position) < 0) {
+            if (fprintf(output, "ERROR:%zu\n", parser.error_position) < 0) {
                 io_error = 1;
             }
         } else {
@@ -359,7 +366,7 @@ int main(int argc, char *argv[])
                 int ch;
 
                 while ((ch = fgetc(results)) != EOF) {
-                    if (putchar(ch) == EOF) {
+                    if (fputc(ch, output) == EOF) {
                         io_error = 1;
                         break;
                     }
@@ -376,7 +383,7 @@ int main(int argc, char *argv[])
         io_error = 1;
     }
 
-    if (fflush(stdout) == EOF) {
+    if (fflush(output) == EOF) {
         io_error = 1;
     }
 
@@ -385,4 +392,261 @@ int main(int argc, char *argv[])
         return 1;
     }
     return 0;
+}
+
+static int process_one(const char *input_path, const char *output_dir)
+{
+    const char *base = strrchr(input_path, '/');
+    base = base == NULL ? input_path : base + 1;
+
+    size_t base_length = strlen(base);
+
+    if (base_length >= 4 &&
+        strcmp(base + base_length - 4, ".txt") == 0) {
+        base_length -= 4;
+    }
+
+    size_t dir_length = strlen(output_dir);
+    size_t path_size = dir_length + base_length
+                     + strlen(STUDENT_NAME) + strlen(STUDENT_LASTNAME)
+                     + strlen(STUDENT_ID) + 9;
+
+    char *output_path = malloc(path_size);
+
+    if (output_path == NULL) {
+        fprintf(stderr, "Not enough memory for output path\n");
+        return 1;
+    }
+
+    memcpy(output_path, output_dir, dir_length);
+    output_path[dir_length] = '/';
+    memcpy(output_path + dir_length + 1, base, base_length);
+
+    size_t prefix_length = dir_length + 1 + base_length;
+
+    snprintf(output_path + prefix_length,
+             path_size - prefix_length,
+             "_%s_%s_%s.txt",
+             STUDENT_NAME, STUDENT_LASTNAME, STUDENT_ID);
+
+    FILE *output = fopen(output_path, "w");
+
+    if (output == NULL) {
+        perror("Cannot open output file");
+        free(output_path);
+        return 1;
+    }
+
+    int status = evaluate_file(input_path, output);
+
+    if (fclose(output) == EOF) {
+        fprintf(stderr, "Cannot close output file\n");
+        status = 1;
+    }
+
+    free(output_path);
+    return status;
+}
+
+static int process_directory(const char *input_dir,
+                             const char *output_dir)
+{
+    DIR *directory = opendir(input_dir);
+
+    if (directory == NULL) {
+        perror("Cannot open input directory");
+        return 1;
+    }
+
+    int status = 0;
+
+    for (;;) {
+        // errno helps separate the end of the folder from a read error.
+        errno = 0;
+        struct dirent *entry = readdir(directory);
+
+        if (entry == NULL) {
+            if (errno != 0) {
+                perror("Cannot read input directory");
+                status = 1;
+            }
+            break;
+        }
+
+        size_t name_length = strlen(entry->d_name);
+
+        // Only names ending in .txt are included.
+        if (name_length < 4 ||
+            strcmp(entry->d_name + name_length - 4, ".txt") != 0) {
+            continue;
+        }
+
+        size_t path_size = strlen(input_dir) + name_length + 2;
+        char *input_path = malloc(path_size);
+
+        if (input_path == NULL) {
+            fprintf(stderr, "Not enough memory for input path\n");
+            status = 1;
+            break;
+        }
+
+        snprintf(input_path, path_size, "%s/%s",
+                 input_dir, entry->d_name);
+
+        struct stat info;
+
+        if (stat(input_path, &info) != 0) {
+            perror("Cannot access directory entry");
+            free(input_path);
+            status = 1;
+            break;
+        }
+
+        // A folder called something.txt is still a folder, so I skip it.
+        // I do not enter subfolders.
+        if (S_ISREG(info.st_mode)) {
+            status = process_one(input_path, output_dir);
+        }
+
+        free(input_path);
+
+        if (status != 0) {
+            break;
+        }
+    }
+
+    if (closedir(directory) != 0) {
+        perror("Cannot close input directory");
+        status = 1;
+    }
+
+    return status;
+}
+
+int main(int argc, char *argv[])
+{
+    const char *input_file = NULL;
+    const char *input_dir = NULL;
+    const char *output_dir = NULL;
+    char *default_dir = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-o") == 0 ||
+            strcmp(argv[i], "--output-dir") == 0) {
+            if (output_dir != NULL || i + 1 >= argc) {
+                fprintf(stderr, "Give one output folder after -o\n");
+                return 1;
+            }
+
+            output_dir = argv[++i];
+        } else if (strcmp(argv[i], "-d") == 0 ||
+                   strcmp(argv[i], "--dir") == 0) {
+            if (input_dir != NULL || i + 1 >= argc) {
+                fprintf(stderr, "Give one input folder after -d\n");
+                return 1;
+            }
+
+            input_dir = argv[++i];
+        } else if (argv[i][0] == '-') {
+            fprintf(stderr, "Unknown option: %s\n", argv[i]);
+            return 1;
+        } else {
+            if (input_file != NULL) {
+                fprintf(stderr, "Give only one input file\n");
+                return 1;
+            }
+
+            input_file = argv[i];
+        }
+    }
+
+    // There must be one input file or one input folder.
+    if ((input_file == NULL && input_dir == NULL) ||
+        (input_file != NULL && input_dir != NULL)) {
+        fprintf(stderr,
+                "Usage: %s [-d DIR] [-o OUTDIR] [input.txt]\n",
+                argv[0]);
+        return 1;
+    }
+
+    const char *source = input_dir != NULL ? input_dir : input_file;
+    struct stat info;
+
+    if (stat(source, &info) != 0) {
+        perror("Cannot access input");
+        return 1;
+    }
+
+    if (input_dir != NULL) {
+        if (!S_ISDIR(info.st_mode)) {
+            fprintf(stderr, "Directory input must be a folder\n");
+            return 1;
+        }
+    } else if (!S_ISREG(info.st_mode)) {
+        fprintf(stderr, "File input must be a regular file\n");
+        return 1;
+    }
+
+    if (output_dir == NULL) {
+        // I ignore trailing slashes when finding the folder name.
+        size_t end = strlen(source);
+
+        while (end > 1 && source[end - 1] == '/') {
+            end--;
+        }
+
+        size_t start = end;
+
+        while (start > 0 && source[start - 1] != '/') {
+            start--;
+        }
+
+        size_t base_length = end - start;
+
+        if (input_dir == NULL && base_length >= 4 &&
+            memcmp(source + end - 4, ".txt", 4) == 0) {
+            base_length -= 4;
+        }
+
+        size_t dir_size = base_length + strlen(STUDENT_NAME)
+                        + strlen(STUDENT_ID) + 3;
+
+        default_dir = malloc(dir_size);
+
+        if (default_dir == NULL) {
+            fprintf(stderr, "Not enough memory for output folder\n");
+            return 1;
+        }
+
+        memcpy(default_dir, source + start, base_length);
+
+        snprintf(default_dir + base_length,
+                 dir_size - base_length,
+                 "_%s_%s", STUDENT_NAME, STUDENT_ID);
+
+        output_dir = default_dir;
+    }
+
+    if (stat(output_dir, &info) == 0) {
+        if (!S_ISDIR(info.st_mode)) {
+            fprintf(stderr, "Output path must be a directory\n");
+            free(default_dir);
+            return 1;
+        }
+    } else if (mkdir(output_dir, 0777) != 0) {
+        perror("Cannot create output directory");
+        free(default_dir);
+        return 1;
+    }
+
+    int status;
+
+    if (input_dir != NULL) {
+        status = process_directory(input_dir, output_dir);
+    } else {
+        status = process_one(input_file, output_dir);
+    }
+
+    free(default_dir);
+    return status;
 }
