@@ -11,8 +11,8 @@
 
 // These values are used in output filenames.
 // Use lowercase letters for the name and surname.
-#define STUDENT_NAME "Yabesh Canistan"
-#define STUDENT_LASTNAME "Raj Kumar"
+#define STUDENT_NAME "yabesh_canistan"
+#define STUDENT_LASTNAME "raj_kumar"
 #define STUDENT_ID "231ADB199"
 
 
