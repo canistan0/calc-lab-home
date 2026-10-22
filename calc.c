@@ -18,6 +18,7 @@ typedef struct {
     FILE *file;
     int current;
     size_t position;
+    int line_has_token;
 } Lexer;
 
 typedef struct {
@@ -40,12 +41,25 @@ static Token next_token(Lexer *lexer)
     // Spaces and tabs count towards positions, but are not tokens.
     while (lexer->current == ' ' || lexer->current == '\t'){
         advance(lexer);}
+    // A comment is allowed only before the first token on a line.
+    // advance still counts every character in the comment.
+    if (lexer->current == '#' && !lexer->line_has_token) {
+        while (lexer->current != '\n' && lexer->current != EOF) {
+            advance(lexer);
+        }
+    }
 
     Token token = {TOK_INVALID, 0, lexer->position};
 
     if (lexer->current == EOF){
         token.type = TOK_END;
         return token;}
+        // A newline starts a fresh line. Spaces do not mark a line as used.
+    if (lexer->current == '\n') {
+        lexer->line_has_token = 0;
+    } else {
+        lexer->line_has_token = 1;
+    }
 
     if (lexer->current >= '0' && lexer->current <= '9'){
         token.type = TOK_NUMBER;
@@ -57,6 +71,7 @@ static Token next_token(Lexer *lexer)
             advance(lexer);}
 
         return token;
+        
     }
 
     int symbol = lexer->current;
@@ -146,9 +161,60 @@ static long long read_primary(Parser *parser)
     return 0;
 }
 
+static long long read_power(Parser *parser)
+{
+    long long base = read_primary(parser);
+
+    if (parser->error_position != 0) {
+        return 0;
+    }
+
+    if (parser->token.type == TOK_POWER) {
+        move_token(parser);
+
+        size_t exponent_position = parser->token.position;
+
+        // Calling read_power again groups powers from the right.
+        // So 2 ** 3 ** 2 means 2 ** (3 ** 2).
+        long long exponent = read_power(parser);
+
+        if (parser->error_position != 0) {
+            return 0;
+        }
+
+        if (exponent < 0) {
+            // The task asks for the start of the negative exponent.
+            set_error(parser, exponent_position);
+            return 0;
+        }
+
+        // Squaring the base uses fewer steps than multiplying it many times.
+        // Starting at 1 also makes x ** 0 equal 1, including 0 ** 0.
+        long long result = 1;
+
+        while (exponent > 0) {
+            if (exponent % 2 != 0) {
+                result *= base;
+            }
+
+            exponent /= 2;
+
+            // I avoid an extra square when no more steps are needed.
+            if (exponent > 0) {
+                base *= base;
+            }
+        }
+
+        return result;
+    }
+
+    return base;
+}
+
+
 static long long read_term(Parser *parser)
 {
-    long long result = read_primary(parser);
+    long long result = read_power(parser);
 
     // This loop handles * and / before the expression handles + and -.
     // It works from left to right, so 12 / 3 * 2 gives 8.
@@ -161,7 +227,7 @@ static long long read_term(Parser *parser)
         // Division by zero points to the start of the right operand.
         // This can be a number or an opening parenthesis.
         size_t right_position = parser->token.position;
-        long long right = read_primary(parser);
+        long long right = read_power(parser);
 
         if (parser->error_position != 0) {
             return 0;
