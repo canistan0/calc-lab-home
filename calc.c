@@ -148,3 +148,112 @@ static long long read_expression(Parser *parser)
     return result;
 }
 
+int main(int argc, char *argv[])
+{
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s input.txt\n", argv[0]);
+        return 1;}
+
+    FILE *input = fopen(argv[1], "r");
+
+    if (input == NULL) {
+        perror("Cannot open input file");
+        return 1;
+    }
+
+    // I save results here first. A later error must remove all results.
+    // A temporary file also avoids keeping many results in memory.
+    FILE *results = tmpfile();
+
+    if (results == NULL) {
+        perror("Cannot create temporary file");
+        fclose(input);
+        return 1;
+    }
+
+    Parser parser = {0};
+    parser.lexer.file = input;
+    parser.lexer.position = 1;
+    parser.lexer.current = fgetc(input);
+    move_token(&parser);
+
+    int io_error = 0;
+
+    while (parser.token.type != TOK_END &&
+           parser.error_position == 0) {
+        if (parser.token.type == TOK_NEWLINE) {
+            move_token(&parser);
+            continue;
+        }
+
+        long long result = read_expression(&parser);
+        if (parser.error_position != 0) {
+            break;
+        }
+
+        // After an expression, only a newline or end of file is allowed.
+        if (parser.token.type != TOK_NEWLINE &&
+            parser.token.type != TOK_END) {
+            set_error(&parser, parser.token.position);
+            break;
+        }
+
+        if (fprintf(results, "%lld\n", result) < 0) {
+            io_error = 1;
+            break;
+        }
+
+        if (parser.token.type == TOK_NEWLINE) {
+            move_token(&parser);
+        }
+    }
+
+    if (ferror(input)) {
+        io_error = 1;
+    }
+
+    if (fclose(input) == EOF) {
+        io_error = 1;
+    }
+
+    if (!io_error) {
+        if (parser.error_position != 0) {
+            // Expression errors are normal results, so they return 0.
+            if (printf("ERROR:%zu\n", parser.error_position) < 0) {
+                io_error = 1;
+            }
+        } else {
+            if (fflush(results) == EOF ||
+                fseek(results, 0, SEEK_SET) != 0) {
+                io_error = 1;
+            } else {
+                int ch;
+
+                while ((ch = fgetc(results)) != EOF) {
+                    if (putchar(ch) == EOF) {
+                        io_error = 1;
+                        break;
+                    }
+                }
+
+                if (ferror(results)) {
+                    io_error = 1;
+                }
+            }
+        }
+    }
+
+    if (fclose(results) == EOF) {
+        io_error = 1;
+    }
+
+    if (fflush(stdout) == EOF) {
+        io_error = 1;
+    }
+
+    if (io_error) {
+        fprintf(stderr, "Cannot read or write file data\n");
+        return 1;
+    }
+    return 0;
+}
