@@ -109,31 +109,93 @@ static void set_error(Parser *parser, size_t position)
         parser->error_position = position;}
 }
 
-static long long read_number(Parser *parser)
+// This declaration lets read_primary use read_expression below.
+static long long read_expression(Parser *parser);
+
+static long long read_primary(Parser *parser)
 {
-    if (parser->token.type != TOK_NUMBER) {
-        // This token is where the parser expected a number.
-        set_error(parser, parser->token.position);
-        return 0;
+    if (parser->token.type == TOK_NUMBER) {
+        long long value = parser->token.value;
+        move_token(parser);
+        return value;
     }
 
-    long long value = parser->token.value;
-    move_token(parser);
-    return value;
+    if (parser->token.type == TOK_LPAREN) {
+        move_token(parser);
+
+        // I calculate the whole expression inside the parentheses first.
+        long long value = read_expression(parser);
+
+        if (parser->error_position != 0) {
+            return 0;
+        }
+
+        if (parser->token.type != TOK_RPAREN) {
+            // This is where the parser expected the closing parenthesis.
+            set_error(parser, parser->token.position);
+            return 0;
+        }
+
+        move_token(parser);
+        return value;
+    }
+
+    // A number or opening parenthesis is needed here.
+    // This also rejects unary minus and empty parentheses.
+    set_error(parser, parser->token.position);
+    return 0;
+}
+
+static long long read_term(Parser *parser)
+{
+    long long result = read_primary(parser);
+
+    // This loop handles * and / before the expression handles + and -.
+    // It works from left to right, so 12 / 3 * 2 gives 8.
+    while (parser->error_position == 0 &&
+           (parser->token.type == TOK_STAR ||
+            parser->token.type == TOK_SLASH)) {
+        TokenType operation = parser->token.type;
+        move_token(parser);
+
+        // Division by zero points to the start of the right operand.
+        // This can be a number or an opening parenthesis.
+        size_t right_position = parser->token.position;
+        long long right = read_primary(parser);
+
+        if (parser->error_position != 0) {
+            return 0;
+        }
+
+        if (operation == TOK_STAR) {
+            result *= right;
+        } else {
+            if (right == 0) {
+                set_error(parser, right_position);
+                return 0;
+            }
+
+            // Integer division removes the decimal part, as C requires.
+            result /= right;
+        }
+    }
+
+    return result;
 }
 
 static long long read_expression(Parser *parser)
 {
-    long long result = read_number(parser);
+    long long result = read_term(parser);
 
-    // The loop calculates + and - from left to right.
+    // Each term finishes its multiplication and division first.
+    // This loop then handles + and - from left to right.
     while (parser->error_position == 0 &&
            (parser->token.type == TOK_PLUS ||
             parser->token.type == TOK_MINUS)) {
         TokenType operation = parser->token.type;
         move_token(parser);
 
-        long long right = read_number(parser);
+        long long right = read_term(parser);
 
         if (parser->error_position != 0) {
             return 0;
@@ -145,6 +207,7 @@ static long long read_expression(Parser *parser)
             result -= right;
         }
     }
+
     return result;
 }
 
