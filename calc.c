@@ -1,6 +1,8 @@
 // Yabesh Canistan Raj Kumar 231ADB199
 // https://github.com/canistan0/calc-lab-home
 // Compile with: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
+// Reference: GNU C Library Manual, "Parsing of Floats",Theodore Norvell, "Parsing Expressions by Recursive Descent",
+// GNU C Library Manual, "Changing the Size of a Block".
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,11 +59,10 @@ static void advance(Lexer *lexer)
 
 static Token next_token(Lexer *lexer)
 {
-    // Spaces and tabs count towards positions, but are not tokens.
-    while (lexer->current == ' ' || lexer->current == '\t'){
-        advance(lexer);}
-    // A comment is allowed only before the first token on a line.
-    // advance still counts every character in the comment.
+    while (lexer->current == ' ' || lexer->current == '\t') {
+        advance(lexer);
+    }
+
     if (lexer->current == '#' && !lexer->line_has_token) {
         while (lexer->current != '\n' && lexer->current != EOF) {
             advance(lexer);
@@ -72,33 +73,105 @@ static Token next_token(Lexer *lexer)
     token.type = TOK_INVALID;
     token.position = lexer->position;
 
-    if (lexer->current == EOF){
+    if (lexer->current == EOF) {
         token.type = TOK_END;
-        return token;}
-        // A newline starts a fresh line. Spaces do not mark a line as used.
-    if (lexer->current == '\n') {
-        lexer->line_has_token = 0;
-    } else {
-        lexer->line_has_token = 1;
-    }
-
-    if (lexer->current >= '0' && lexer->current <= '9'){
-        token.type = TOK_NUMBER;
-
-        // Each new digit moves the previous digits one place to the left.
-        // The task says integer values in the tests do not overflow.
-        while (lexer->current >= '0' && lexer->current <= '9'){
-            token.value.integer = token.value.integer * 10 + (lexer->current - '0');
-            advance(lexer);}
-
         return token;
-        
     }
 
+    lexer->line_has_token = lexer->current != '\n';
+
+    if (lexer->current >= '0' && lexer->current <= '9') {
+        size_t capacity = 32;
+        size_t length = 0;
+        char *text = malloc(capacity);
+        int has_dot = 0;
+
+        if (text == NULL) {
+            lexer->memory_error = 1;
+            return token;
+        }
+
+        // I keep only the current number in memory.
+        // Doubling the buffer avoids copying it for every new digit.
+        for (;;) {
+            int digit = lexer->current >= '0' &&
+                        lexer->current <= '9';
+
+            if (!digit && (lexer->current != '.' || has_dot)) {
+                break;
+            }
+
+            if (length + 1 >= capacity) {
+                if (capacity > (size_t)-1 / 2) {
+                    free(text);
+                    lexer->memory_error = 1;
+                    return token;
+                }
+
+                size_t next_capacity = capacity * 2;
+                char *larger = realloc(text, next_capacity);
+
+                if (larger == NULL) {
+                    free(text);
+                    lexer->memory_error = 1;
+                    return token;
+                }
+
+                text = larger;
+                capacity = next_capacity;
+            }
+
+            if (lexer->current == '.') {
+                size_t dot_position = lexer->position;
+                has_dot = 1;
+                text[length++] = '.';
+                advance(lexer);
+
+                if (lexer->current < '0' ||
+                    lexer->current > '9') {
+                    // A decimal needs digits after its dot.
+                    // For 5., the error points to the dot.
+                    token.position = dot_position;
+                    free(text);
+                    return token;
+                }
+            } else {
+                text[length++] = (char)lexer->current;
+                advance(lexer);
+            }
+        }
+
+        text[length] = '\0';
+        token.value.is_float = has_dot;
+
+        if (has_dot) {
+            token.value.real = strtod(text, NULL);
+
+            if (!isfinite(token.value.real)) {
+                free(text);
+                return token;
+            }
+        } else {
+            errno = 0;
+            token.value.integer = strtoll(text, NULL, 10);
+
+            if (errno == ERANGE) {
+                free(text);
+                return token;
+            }
+        }
+
+        free(text);
+        token.type = TOK_NUMBER;
+        return token;
+    }
+
+    // A leading dot, such as .5, reaches the invalid-symbol case.
+    // The letter e in 1.5e3 is also an invalid symbol.
     int symbol = lexer->current;
     advance(lexer);
 
-    switch (symbol){
+    switch (symbol) {
         case '+':
             token.type = TOK_PLUS;
             break;
@@ -106,7 +179,6 @@ static Token next_token(Lexer *lexer)
             token.type = TOK_MINUS;
             break;
         case '*':
-            // Two stars together form one power operator.
             if (lexer->current == '*') {
                 advance(lexer);
                 token.type = TOK_POWER;
@@ -127,9 +199,9 @@ static Token next_token(Lexer *lexer)
             token.type = TOK_NEWLINE;
             break;
         default:
-            token.type = TOK_INVALID;
             break;
     }
+
     return token;
 }
 
@@ -416,8 +488,9 @@ static int evaluate_file(const char *input_path, FILE *output)
         }
     }
 
-    if (ferror(input)) {
-        io_error = 1;
+    // A memory failure is a program error, not an expression error.
+    if (ferror(input) || parser.lexer.memory_error) {
+    io_error = 1;
     }
 
     if (fclose(input) == EOF) {
