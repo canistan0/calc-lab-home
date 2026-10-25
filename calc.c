@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <errno.h>
+#include <math.h>
 
 // These values are used in output filenames.
 // Use lowercase letters for the name and surname.
@@ -15,6 +16,11 @@
 #define STUDENT_LASTNAME "raj_kumar"
 #define STUDENT_ID "231ADB199"
 
+typedef struct {
+    int is_float;
+    long long integer;
+    double real;
+} Value;
 
 typedef enum {
     TOK_NUMBER,TOK_PLUS,TOK_MINUS,TOK_STAR,TOK_SLASH,TOK_POWER,TOK_LPAREN,TOK_RPAREN,TOK_NEWLINE,TOK_INVALID,TOK_END
@@ -22,7 +28,7 @@ typedef enum {
 
 typedef struct {
     TokenType type;
-    long long value;
+    Value value;
     size_t position;
 } Token;
 
@@ -31,6 +37,7 @@ typedef struct {
     int current;
     size_t position;
     int line_has_token;
+    int memory_error;
 } Lexer;
 
 typedef struct {
@@ -61,7 +68,9 @@ static Token next_token(Lexer *lexer)
         }
     }
 
-    Token token = {TOK_INVALID, 0, lexer->position};
+    Token token = {0};
+    token.type = TOK_INVALID;
+    token.position = lexer->position;
 
     if (lexer->current == EOF){
         token.type = TOK_END;
@@ -79,7 +88,7 @@ static Token next_token(Lexer *lexer)
         // Each new digit moves the previous digits one place to the left.
         // The task says integer values in the tests do not overflow.
         while (lexer->current >= '0' && lexer->current <= '9'){
-            token.value = token.value * 10 + (lexer->current - '0');
+            token.value.integer = token.value.integer * 10 + (lexer->current - '0');
             advance(lexer);}
 
         return token;
@@ -136,157 +145,209 @@ static void set_error(Parser *parser, size_t position)
         parser->error_position = position;}
 }
 
-// This declaration lets read_primary use read_expression below.
-static long long read_expression(Parser *parser);
-
-static long long read_primary(Parser *parser)
+static double as_double(Value value)
 {
-    if (parser->token.type == TOK_NUMBER) {
-        long long value = parser->token.value;
-        move_token(parser);
-        return value;
-    }
-
-    if (parser->token.type == TOK_LPAREN) {
-        move_token(parser);
-
-        // I calculate the whole expression inside the parentheses first.
-        long long value = read_expression(parser);
-
-        if (parser->error_position != 0) {
-            return 0;
-        }
-
-        if (parser->token.type != TOK_RPAREN) {
-            // This is where the parser expected the closing parenthesis.
-            set_error(parser, parser->token.position);
-            return 0;
-        }
-
-        move_token(parser);
-        return value;
-    }
-
-    // A number or opening parenthesis is needed here.
-    // This also rejects unary minus and empty parentheses.
-    set_error(parser, parser->token.position);
-    return 0;
+    return value.is_float ? value.real : (double)value.integer;
 }
 
-static long long read_power(Parser *parser)
+static Value calculate(Parser *parser, Value left, Value right,
+                       TokenType operation, size_t operator_position,
+                       size_t right_position)
 {
-    long long base = read_primary(parser);
+    Value result = {0};
 
-    if (parser->error_position != 0) {
-        return 0;
+    if (operation == TOK_SLASH &&
+        (right.is_float ? right.real == 0.0 : right.integer == 0)) {
+        // Division by zero points to the start of the right operand.
+        set_error(parser, right_position);
+        return result;
     }
 
-    if (parser->token.type == TOK_POWER) {
-        move_token(parser);
+    // If either operand is a float, I use double arithmetic.
+    if (left.is_float || right.is_float) {
+        double a = as_double(left);
+        double b = as_double(right);
+        result.is_float = 1;
 
-        size_t exponent_position = parser->token.position;
-
-        // Calling read_power again groups powers from the right.
-        // So 2 ** 3 ** 2 means 2 ** (3 ** 2).
-        long long exponent = read_power(parser);
-
-        if (parser->error_position != 0) {
-            return 0;
+        switch (operation) {
+            case TOK_PLUS:
+                result.real = a + b;
+                break;
+            case TOK_MINUS:
+                result.real = a - b;
+                break;
+            case TOK_STAR:
+                result.real = a * b;
+                break;
+            case TOK_SLASH:
+                result.real = a / b;
+                break;
+            case TOK_POWER:
+                result.real = pow(a, b);
+                break;
+            default:
+                break;
         }
 
-        if (exponent < 0) {
-            // The task asks for the start of the negative exponent.
-            set_error(parser, exponent_position);
-            return 0;
-        }
-
-        // Squaring the base uses fewer steps than multiplying it many times.
-        // Starting at 1 also makes x ** 0 equal 1, including 0 ** 0.
-        long long result = 1;
-
-        while (exponent > 0) {
-            if (exponent % 2 != 0) {
-                result *= base;
-            }
-
-            exponent /= 2;
-
-            // I avoid an extra square when no more steps are needed.
-            if (exponent > 0) {
-                base *= base;
-            }
+        // Infinity and NaN are errors at the operator.
+        if (!isfinite(result.real)) {
+            set_error(parser, operator_position);
         }
 
         return result;
     }
 
-    return base;
+    // Integer operations stay separate to keep exact values and division.
+    // The task says the integer tests do not overflow.
+    switch (operation) {
+        case TOK_PLUS:
+            result.integer = left.integer + right.integer;
+            break;
+        case TOK_MINUS:
+            result.integer = left.integer - right.integer;
+            break;
+        case TOK_STAR:
+            result.integer = left.integer * right.integer;
+            break;
+        case TOK_SLASH:
+            result.integer = left.integer / right.integer;
+            break;
+        case TOK_POWER: {
+            if (right.integer < 0) {
+                set_error(parser, right_position);
+                return result;
+            }
+
+            long long base = left.integer;
+            long long exponent = right.integer;
+            result.integer = 1;
+
+            // Squaring needs fewer steps than multiplying many times.
+            // Starting at 1 also handles 0 ** 0.
+            while (exponent > 0) {
+                if (exponent % 2 != 0) {
+                    result.integer *= base;
+                }
+
+                exponent /= 2;
+
+                if (exponent > 0) {
+                    base *= base;
+                }
+            }
+            break;
+        }
+        default:
+            break;
+    }
+
+    return result;
 }
 
+static Value read_expression(Parser *parser);
 
-static long long read_term(Parser *parser)
+static Value read_primary(Parser *parser)
 {
-    long long result = read_power(parser);
+    Value result = {0};
 
-    // This loop handles * and / before the expression handles + and -.
-    // It works from left to right, so 12 / 3 * 2 gives 8.
+    if (parser->token.type == TOK_NUMBER) {
+        result = parser->token.value;
+        move_token(parser);
+        return result;
+    }
+
+    if (parser->token.type == TOK_LPAREN) {
+        move_token(parser);
+        result = read_expression(parser);
+
+        if (parser->error_position != 0) {
+            return result;
+        }
+
+        if (parser->token.type != TOK_RPAREN) {
+            // This is where the closing parenthesis was needed.
+            set_error(parser, parser->token.position);
+            return result;
+        }
+
+        move_token(parser);
+        return result;
+    }
+
+    // A number or opening parenthesis is needed here.
+    // This also rejects unary signs and empty parentheses.
+    set_error(parser, parser->token.position);
+    return result;
+}
+
+static Value read_power(Parser *parser)
+{
+    Value left = read_primary(parser);
+
+    if (parser->error_position == 0 &&
+        parser->token.type == TOK_POWER) {
+        size_t operator_position = parser->token.position;
+        move_token(parser);
+        size_t right_position = parser->token.position;
+
+        // Calling read_power again gives 2 ** (3 ** 2).
+        Value right = read_power(parser);
+
+        if (parser->error_position == 0) {
+            left = calculate(parser, left, right, TOK_POWER,
+                             operator_position, right_position);
+        }
+    }
+
+    return left;
+}
+
+static Value read_term(Parser *parser)
+{
+    Value left = read_power(parser);
+
+    // Powers finish first. Multiplication and division run left to right.
     while (parser->error_position == 0 &&
            (parser->token.type == TOK_STAR ||
             parser->token.type == TOK_SLASH)) {
         TokenType operation = parser->token.type;
+        size_t operator_position = parser->token.position;
         move_token(parser);
-
-        // Division by zero points to the start of the right operand.
-        // This can be a number or an opening parenthesis.
         size_t right_position = parser->token.position;
-        long long right = read_power(parser);
 
-        if (parser->error_position != 0) {
-            return 0;
-        }
+        Value right = read_power(parser);
 
-        if (operation == TOK_STAR) {
-            result *= right;
-        } else {
-            if (right == 0) {
-                set_error(parser, right_position);
-                return 0;
-            }
-
-            // Integer division removes the decimal part, as C requires.
-            result /= right;
+        if (parser->error_position == 0) {
+            left = calculate(parser, left, right, operation,
+                             operator_position, right_position);
         }
     }
 
-    return result;
+    return left;
 }
 
-static long long read_expression(Parser *parser)
+static Value read_expression(Parser *parser)
 {
-    long long result = read_term(parser);
+    Value left = read_term(parser);
 
-    // Each term finishes its multiplication and division first.
-    // This loop then handles + and - from left to right.
+    // Terms finish first, so * and / have higher priority than + and -.
     while (parser->error_position == 0 &&
            (parser->token.type == TOK_PLUS ||
             parser->token.type == TOK_MINUS)) {
         TokenType operation = parser->token.type;
+        size_t operator_position = parser->token.position;
         move_token(parser);
+        size_t right_position = parser->token.position;
 
-        long long right = read_term(parser);
+        Value right = read_term(parser);
 
-        if (parser->error_position != 0) {
-            return 0;
-        }
-
-        if (operation == TOK_PLUS) {
-            result += right;
-        } else {
-            result -= right;
+        if (parser->error_position == 0) {
+            left = calculate(parser, left, right, operation,
+                             operator_position, right_position);
         }
     }
 
-    return result;
+    return left;
 }
 
 static int evaluate_file(const char *input_path, FILE *output)
@@ -322,10 +383,11 @@ static int evaluate_file(const char *input_path, FILE *output)
             continue;
         }
 
-        long long result = read_expression(&parser);
+        Value result = read_expression(&parser);
         if (parser.error_position != 0) {
             break;
         }
+        
 
         // After an expression, only a newline or end of file is allowed.
         if (parser.token.type != TOK_NEWLINE &&
@@ -333,11 +395,21 @@ static int evaluate_file(const char *input_path, FILE *output)
             set_error(&parser, parser.token.position);
             break;
         }
+        // The task asks for 15 significant digits when printing floats.
+        int written;
 
-        if (fprintf(results, "%lld\n", result) < 0) {
-            io_error = 1;
-            break;
+        if (result.is_float) {
+        written = fprintf(results, "%.15g\n", result.real);
+        } else {
+            written = fprintf(results, "%lld\n", result.integer);
+            }
+
+        if (written < 0) {
+        io_error = 1;
+        break;
         }
+
+
 
         if (parser.token.type == TOK_NEWLINE) {
             move_token(&parser);
